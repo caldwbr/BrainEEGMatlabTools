@@ -1,0 +1,149 @@
+%% PARAMETERS
+frequencies = 4:4:48;  % 4 Hz steps, 12 total frequencies
+Fs = 1000;
+tCMW = -2:1/Fs:2;
+numFreqs = length(frequencies);
+numChannels = 16;
+electrodeLabels = {'Fp1','Fp2','C3','C4','Pz','Fz','O1','O2','F7','F8','F3','F4','T3','Cz','P3','P4'};
+
+% Extract first 10 minutes (already interpolated to 1000Hz)
+interpolatedVoltages = interpolatedVoltagesAll(48000:600000, :);
+nData = size(interpolatedVoltages,1);
+nConv = nData + length(tCMW) - 1;
+halfK = floor(length(tCMW)/2);
+
+%% Precompute Morlet kernels
+morletWavelets = zeros(numFreqs, length(tCMW));
+for i = 1:numFreqs
+    f = frequencies(i);
+    s = 5 / (2*pi*f);
+    morletWavelets(i,:) = exp(1i*2*pi*f*tCMW) .* exp(-tCMW.^2/(2*s^2));
+end
+
+% FFT transform of kernels
+morletFFTs = zeros(numFreqs, nConv);
+for i = 1:numFreqs
+    waveletX = fft(morletWavelets(i,:), nConv);
+    waveletX = waveletX ./ max(abs(waveletX));
+    morletFFTs(i,:) = waveletX;
+end
+
+%% Convolve all channels and frequencies
+eegConvress = zeros(numFreqs, nData, numChannels);
+for ch = 1:numChannels
+    eegData = interpolatedVoltages(:, ch);
+    dataX = fft(eegData, nConv);
+    for i = 1:numFreqs
+        convolutionResult = ifft(dataX .* morletFFTs(i,:).');
+        eegConvress(i,:,ch) = convolutionResult(halfK+1 : halfK+nData);
+    end
+end
+
+%% Build frequency colormap: blue (low) to red (high)
+cmap = jet(numFreqs);
+
+
+
+
+%% VIDEO SETTINGS
+videoFrameRate = 50;
+stepSize = 20;  % 20 ms/frame
+frameCount = floor(nData / stepSize);
+figh = figure('Position', [100, 100, 1000, 1000], 'Color', 'w');
+desktopPath = fullfile(getenv('HOME'), 'Desktop');
+videoFileName = fullfile(desktopPath, 'EEG_Frames_Grid_CLEAN.mp4');
+v = VideoWriter(videoFileName, 'MPEG-4');
+v.FrameRate = videoFrameRate;
+open(v);
+
+%% ELECTRODE SETUP
+% Your channel labels (raw order of data)
+electrodeLabels = {'Fp1','Fp2','C3','C4','Pz','Fz','O1','O2','F7','F8','F3','F4','T3','Cz','P3','P4'};
+
+% Your desired display order (from your drawing)
+%displayOrder = [11 1 2 12 9 14 6 10 13 15 5 16 3 7 8 4];
+displayOrder = [3 13 9 11 7 15 14 1 8 5 6 2 4 16 10 12];
+
+% Fixed 4x4 grid for display layout
+[xGrid, yGrid] = meshgrid(1:4, 1:4);
+gridPos = [xGrid(:), yGrid(:)];  % Grid stays static!
+
+%% COLORMAP
+numFreqs = size(eegConvress,1); % You already know this from your convolution earlier
+cmap = jet(numFreqs);
+
+%% FRAME LOOP
+for frameNum = 1:frameCount
+    cla; hold on;
+    ax = gca;
+    set(ax, 'Color', 'k');  % Black background
+    
+    timeIdx = (frameNum-1)*stepSize + 1;
+
+    for chDisplayIdx = 1:16
+        % Grid position stays fixed for display
+        xPos = gridPos(chDisplayIdx, 1);
+        yPos = gridPos(chDisplayIdx, 2);
+        
+        % Correct channel index for data extraction
+        chDataIdx = displayOrder(chDisplayIdx);  
+
+        for fIdx = 1:numFreqs
+            amp = abs(eegConvress(fIdx, timeIdx, chDataIdx));
+            radius = amp * 0.1;  % << Smaller scaling for clean circle sizes
+            color = cmap(fIdx,:);
+            rectangle('Position', [xPos-radius, yPos-radius, 2*radius, 2*radius], ...
+                'Curvature',[1 1],'EdgeColor',color,'LineWidth',1.0);
+        end
+
+        % Correct electrode label
+        text(xPos, yPos+0.15, electrodeLabels{chDataIdx}, 'Color','w','FontSize',9,'HorizontalAlignment','center');
+    end
+
+    % Plot settings
+    axis equal;
+    axis([0 5 0 5]);
+    set(gca,'XTick',[],'YTick',[]);
+    currentTimeSec = (timeIdx-1)/Fs + 48.0;  % 48 second offset
+    text(0.5, 4.7, sprintf('Time: %.2f sec', currentTimeSec), ...
+    'Color','w','FontSize',16,'FontWeight','bold','HorizontalAlignment','center');
+
+    drawnow;
+    frame = getframe(figh);
+    writeVideo(v, frame);
+end
+
+close(v);
+
+
+
+%% PARAMETERS (match your eegConvress code)
+frequencies = 4:4:48;  % 12 total frequencies
+numFreqs = length(frequencies);
+
+% Same jet colormap
+cmap = jet(numFreqs);
+
+%% BUILD LEGEND
+
+figure('Color','w','Position',[300 300 200 600]);
+
+% Plot rectangles for each frequency bin
+for i = 1:numFreqs
+    rectangle('Position',[0, frequencies(i)-2, 1, 4], ...
+        'FaceColor', cmap(i,:), 'EdgeColor','none');
+end
+
+% Setup axes
+ylim([0 50]);
+xlim([0 1.2]);
+set(gca,'YDir','normal','XTick',[],'Box','off','FontSize',12)
+ylabel('Frequency (Hz)', 'FontSize', 14, 'FontWeight','bold');
+title('Frequency Color Map', 'FontSize', 16, 'FontWeight','bold')
+
+% Add tick marks at every 8 Hz to keep it readable
+yticks(4:8:48)
+
+% OPTIONAL: Save as PNG for use in your video
+exportgraphics(gca, 'FrequencyColorLegend_4to48.png','Resolution',300)
+
