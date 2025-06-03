@@ -1,0 +1,327 @@
+% Somewhat salvaged flow, now used for green needle/brainstorm (GNBS) test which also included unknown song and like 10 known songs EEG
+
+% Basic workflow to take voltage EEG and obtain an array
+% of complex morlet wavelet coefficients for freqs 2/7/10/15/20/30/40hz
+% With this array[freqs] of complex numbers, with just any
+% timepoint, the complex number, you can obtain
+% REAL real(eegConvress(freq,:,channel)
+% IMAG imag(eegConvress(freq,:,channel)
+% AMP abs(eegConvress(freq,:,channel)
+% POWER abs(eegConvress(freq,:,channel).^2
+% PHASE angle(eegConvress(freq,:,channel)
+tableData = OpenBCIRAW20250601150442;
+tableData = tableData(6:end, :);
+dataArray = table2array(tableData);
+interpolatedVoltages = csvread('interpolatedVoltages.csv');
+electrodeLabels = {'Fp1', 'Fp2', 'C3', 'C4', 'Pz', 'Fz', 'O1', 'O2', ...
+                   'F7', 'F8', 'F3', 'F4', 'T3', 'Cz', 'P3', 'P4'};
+
+
+% Given dataArray (448209 x 17 double array for large EEG data)
+% Columns 1-16: Voltages, Column 17: Timepoints (unix)
+
+% Extract voltages (448209 x 16) and timepoints (448209 x 1)
+voltages = dataArray(:, 1:16);
+timepoints = dataArray(:, 30);
+
+% Convert timepoints to milliseconds
+timepoints_ms = (timepoints - min(timepoints)) * 1000;
+
+% Define the desired sampling rate for extrapolated values
+desired_interval_ms = 1; % 1 ms interval
+
+% Calculate the number of points for the interpolatedVoltages array
+num_points = ceil((max(timepoints_ms) - min(timepoints_ms)) / desired_interval_ms) + 1;
+interpolatedVoltages = zeros(num_points, 16);
+
+% Define chunk size (number of points per chunk)
+chunk_size = 100000; % Adjust based on your system's memory capacity
+
+% Process the data in chunks for each channel
+for channel = 1:16
+    interpolatedChannel = [];
+    for start_idx = 1:chunk_size:length(timepoints_ms)
+        end_idx = min(start_idx + chunk_size - 1, length(timepoints_ms));
+        
+        % Get the current chunk
+        chunk_timepoints = timepoints_ms(start_idx:end_idx);
+        chunk_voltages = voltages(start_idx:end_idx, channel);
+        
+        % Ensure unique timepoints for the chunk
+        [unique_timepoints, unique_indices] = unique(chunk_timepoints);
+        unique_voltages = chunk_voltages(unique_indices);
+        
+        % Create the time vector for the smooth curve
+        t_smooth = linspace(min(unique_timepoints), max(unique_timepoints), ...
+                            ceil((max(unique_timepoints) - min(unique_timepoints)) / desired_interval_ms) + 1);
+        
+        % Fit a smooth curve using spline interpolation
+        voltage_smooth = interp1(unique_timepoints, unique_voltages, t_smooth, 'spline');
+        
+        % Create the time vector for the extrapolated values within this chunk
+        t_interpolated = unique_timepoints(1):desired_interval_ms:unique_timepoints(end);
+        
+        % Query the smooth curve for the extrapolated values
+        voltage_interpolated = interp1(t_smooth, voltage_smooth, t_interpolated, 'spline');
+        
+        % Append the extrapolated values to the result for this channel
+        interpolatedChannel = [interpolatedChannel; voltage_interpolated(:)];
+    end
+    
+    % Store the result for this channel
+    interpolatedVoltages(1:length(interpolatedChannel), channel) = interpolatedChannel;
+end
+
+% Ensure that interpolatedVoltages is trimmed to the correct number of points
+interpolatedVoltages = interpolatedVoltages(1:num_points, :);
+
+% Now interpolatedVoltages contains the extrapolated values for all channels
+
+
+
+% Plot 10 seconds of data
+t0 = 10 * 1000;  % ms
+
+% Find closest indices in each dataset
+[~, idx_orig] = min(abs(timepoints_ms - t0));
+[~, idx_interp] = min(abs(global_t - t0));
+
+% Extract some reasonable window around that point
+window_orig = (idx_orig-50):(idx_orig+50);
+window_interp = (idx_interp-400):(idx_interp+400);  % 1000 Hz vs 125 Hz
+
+% Clean boundaries (in case windows go out of range)
+window_orig = window_orig(window_orig > 0 & window_orig <= length(timepoints_ms));
+window_interp = window_interp(window_interp > 0 & window_interp <= length(global_t));
+
+% Plot
+figure; hold on;
+
+% Plot original raw data as red dots
+plot(timepoints_ms(window_orig), voltages(window_orig, 1), 'ro', 'DisplayName','Original Data');
+
+% Plot interpolated smooth curve as blue line
+plot(global_t(window_interp), interpolatedVoltages(window_interp, 1), 'b-', 'LineWidth', 1.5, 'DisplayName','Interpolated Curve');
+
+% Plot interpolated individual dots as black triangles
+plot(global_t(window_interp), interpolatedVoltages(window_interp, 1), 'k^', 'MarkerSize', 4, 'DisplayName','Interpolated Dots');
+
+xlabel('Time (ms)');
+ylabel('Voltage');
+title('Original vs Interpolated EEG');
+legend;
+grid on;
+hold off;
+
+csvwrite('interpolatedVoltagesUnknownSongPlus.csv', interpolatedVoltages);
+
+interpolatedVoltages = csvread('interpolatedVoltagesUnknownSongPlus.csv');
+
+dataArray = interpolatedVoltages;
+
+Fs = 1000; 
+L = size(dataArray,1);
+tEEG = (0:L-1) / Fs;
+tCMW = -2:1/Fs:2;
+frequencies = 3.0:0.1:40.0;%[2.0, 7.0, 10.0, 15.0, 20.0, 30.0, 40.0];
+morletWavelets = zeros(length(frequencies), length(tCMW));
+gaussianWindows = zeros(length(frequencies), length(tCMW));
+sineWaves = zeros(length(frequencies), length(tCMW));
+for i = 1:length(frequencies)
+    f = frequencies(i);
+    % Create complex sine wave
+    sineWave = exp(1i * 2 * pi * f * tCMW);
+    sineWaves(i, :) = sineWave; % Store the sine wave
+    % Compute standard deviation for Gaussian based on 5 cycles
+    s = 5 / (2 * pi * f);
+    % Create Gaussian window
+    gauss = exp(-tCMW.^2 / (2 * s^2));
+    % Store Gaussian window
+    gaussianWindows(i, :) = gauss;
+    % Create complex Morlet wavelet
+    morletWavelets(i, :) = sineWave .* gauss;
+end
+
+nData = length(tEEG);
+nKern = length(morletWavelets(1,:));
+nConv = nData + nKern - 1;
+halfK = floor(nKern/2);
+
+interpolatedVoltagesAll = interpolatedVoltages;
+interpolatedVoltages = interpolatedVoltages(48000:600000, :); %Green Needle vs Brain Storm test
+
+
+% Assume interpolatedVoltages already loaded and upsampled
+Fs = 1000;
+nData = size(interpolatedVoltages, 1);
+channelIndex = 6;  % Fz
+
+% Extract just the one channel
+eegData = interpolatedVoltages(:, channelIndex);
+dataX = fft(eegData, nConv);
+
+% Allocate convolution result matrix
+eegConvress = zeros(length(frequencies), nData);
+
+for f = 1:length(frequencies)
+    % FFT of current Morlet kernel
+    waveletX = fft(morletWavelets(f,:), nConv);
+    waveletX = waveletX ./ max(abs(waveletX));  % Normalize
+    
+    % Convolve in frequency domain
+    convolutionResult = ifft(dataX .* waveletX.');
+    
+    % Truncate edge to align result
+    eegConvress(f,:) = convolutionResult(ceil(nKern/2):ceil(nKern/2)+nData-1);
+end
+
+
+
+% Initialize an empty array to store the detected pit points
+pitPoints = [];  % Will store [channel, frequency, timepoint, amplitude]
+
+% Define a neighborhood size for local minima detection (3x3 neighborhood)
+neighborhoodSize = 3;
+
+% Assume: eegConvress = [freqs x timepoints]  (for single channel)
+timeFreqSurface = abs(eegConvress);  % Take absolute value if you want magnitude
+
+% Loop through the time-frequency surface and find local minima
+for freqIdx = 2:(size(timeFreqSurface, 1) - 1)  % Frequency loop (ignore edges)
+    for timeIdx = 2:(size(timeFreqSurface, 2) - 1)  % Time loop (ignore edges)
+
+        % Extract the local neighborhood (3x3 window)
+        localNeighborhood = timeFreqSurface(freqIdx-1:freqIdx+1, timeIdx-1:timeIdx+1);
+
+        % Check if the current point is the minimum in the neighborhood
+        if timeFreqSurface(freqIdx, timeIdx) == min(localNeighborhood(:))
+            % Extract values for this minima
+            minimaFreq = frequencies(freqIdx);
+            minimaTime = tEEG(timeIdx);
+            minimaAmp = timeFreqSurface(freqIdx, timeIdx);
+
+            % Use channelIndex = 6 for Fz
+            pitPoints = [pitPoints; 6, minimaFreq, minimaTime, minimaAmp];
+        end
+    end
+end
+
+
+
+
+%Used to be Pippi stuff!!!
+% Set up video and figure
+samplingRate = 1000; % 1000 Hz sampling rate
+videoFrameRate = 50; % 50 frames per second
+stepSize = 20; % Advance 20 data points per frame (corresponds to 20 ms)
+maxWindowSize = 500; % Fixed window size for the time axis (0-500 ms)
+
+% Video settings
+frameCount = 27600; 
+figh = figure('Position', [100, 100, 1000, 1000], 'Color', 'w'); % 1000x1000 figure
+% Setup video writer
+desktopPath = fullfile(getenv('HOME'), 'Desktop');
+videoFileName = fullfile(desktopPath, 'GNBS.mp4');
+v = VideoWriter(videoFileName, 'MPEG-4');
+v.FrameRate = videoFrameRate;
+open(v);
+
+% Replace 'freqs' with 'frequencyValues' to avoid conflict with MATLAB function
+frequencyValues = linspace(3, 40, 371); % 371 frequencies from 3 Hz to 40 Hz
+
+electrodeLabel = 'Fz (mPFC)';
+SSEOMap = jet;
+% Apply the colormap
+colormap('jet');
+% Ensure the number of time points matches the size of the colormap
+numTimePoints = 500;%size(currentWindow, 2);
+% Interpolate the colormap to match the number of time points
+cmap = interp1(linspace(1, numTimePoints, size(SSEOMap, 1)), SSEOMap, 1:numTimePoints);
+% If the number of time points in currentWindow is greater than 240, resize cmap accordingly
+if numTimePoints > size(SSEOMap, 1)
+    cmap = interp1(linspace(1, numTimePoints, size(SSEOMap, 1)), SSEOMap, linspace(1, numTimePoints, numTimePoints));
+end
+% Create video frames, starting with no data
+for frameNum = 1:frameCount
+    cla; % Clear current frame content only
+    hold on;
+    % Set axes background color to black and remove grid lines and labels
+    ax = gca;
+    %set(ax, 'Color', 'k', 'XColor', 'k', 'YColor', 'k', 'ZColor', 'k', 'GridColor', 'k');
+    %set(ax, 'XTick', [], 'YTick', [], 'ZTick', []);
+    %set(ax, 'Box', 'off'); % Remove box around the plot
+    % Calculate the current time in seconds from the start time
+    currentTimeSec = (frameNum / videoFrameRate) + 48.0;  % Start at ...
+    minutes = floor(currentTimeSec / 60);
+    seconds = floor(mod(currentTimeSec, 60));
+    milliseconds = floor(mod(currentTimeSec * 1000, 1000));
+
+    % Format the time for display
+    timeString = sprintf('Time: %02d:%02d.%03d', minutes, seconds, milliseconds);
+
+    % Calculate the window size for the current frame (grow by 20 ms per frame)
+    windowSize = frameNum * stepSize; % This will increase the amount of data shown with each frame
+    windowSize = min(windowSize, maxWindowSize); % Limit window size to 500 ms
+    currentDataIndex = max(1, frameNum * stepSize - maxWindowSize + 1); % Current window data start
+    % Extract data for Fz (channel 6) window
+    currentWindow = eegConvress(:, currentDataIndex:currentDataIndex + windowSize - 1);
+    absAmplitude = abs(currentWindow);
+    % Plot the time-frequency fabric
+    for t = 1:size(currentWindow, 2)
+        plot3(frequencyValues, absAmplitude(:, t), ones(length(frequencyValues), 1) * (maxWindowSize - (windowSize - t)), 'Color', [cmap(t, :) 0.7], 'LineWidth', 2);
+    end
+    % Loop over all pit points to check which ones should be plotted in this frame
+    for p = 1:size(pitPoints, 1)
+        pitFreq = pitPoints(p, 2); % Pit point frequency
+        pitTime = pitPoints(p, 3); % Pit point time (in seconds)
+        pitAmp = pitPoints(p, 4); % Pit point amplitude
+        pitTimeIndex = round(pitTime * samplingRate); % Convert seconds to sample index
+        % Check if the pit point should be plotted in this time window
+        if pitTimeIndex >= currentDataIndex && pitTimeIndex <= currentDataIndex + windowSize - 1
+            % Ensure that the pitTimeIndex is not too early (< 500 ms)
+            if pitTimeIndex >= 500 % Only plot if pitTimeIndex is beyond the initial data
+                [~, freqIndex] = min(abs(frequencyValues - pitFreq)); % Closest frequency index
+                relativeTimeIndex = pitTimeIndex - currentDataIndex + 1; % Time within window
+                % Plot the pit point as a black dot at the right time, frequency, and amplitude
+                plot3(frequencyValues(freqIndex), pitAmp, relativeTimeIndex, 'k.', 'MarkerSize', 15); % Black dot at the correct amplitude
+            end
+        end
+    end
+    % Labels and title
+    xlim([3 40]);
+    ylim([0 10]); % Amplitude axis, 0-15
+    zlim([0 maxWindowSize]); % Fixed time axis (always 0-500 ms)
+    text(3, -1, -150, timeString, 'Color', 'k', 'FontSize', 12, 'FontWeight', 'bold', 'VerticalAlignment', 'top');
+    % Define z-axis ticks and labels for 0 to -500 ms in steps of 50 ms
+    zTicks = 0:50:500;  % Define ticks from 0 to 500 ms
+    negZTicks = -500:50:0;
+    zTickLabels = arrayfun(@(z) sprintf('%d', z), negZTicks, 'UniformOutput', false);  % Labels from 0 ms to -500 ms
+    zTickLabels{11} = 'Present (red): 0 ms';  % Replace the first label to be '0' instead of '-0'
+    zTickLabels{10} = '-50 ms';
+    zTickLabels{9} = '-100 ms';
+    zTickLabels{8} = '-150 ms';
+    zTickLabels{7} = '-200 ms';
+    zTickLabels{6} = '-250 ms';
+    zTickLabels{5} = '-300 ms';
+    zTickLabels{4} = '-350 ms';
+    zTickLabels{3} = '-400 ms';
+    zTickLabels{2} = '-450 ms';
+    zTickLabels{1} = 'Past (blue): -500 ms';
+
+    % Set the custom z-ticks and labels
+    set(ax, 'ZTick', zTicks);
+    set(ax, 'ZTickLabel', zTickLabels);
+    
+    % Additional plotting settings
+    %title('Fz Time-Frequency Fabric (Temps Test, Subject 2)');
+    xlabel('Frequency (Hz)');
+    ylabel('Amplitude');
+    %zlabel('Time (ms), red is present, blue is 500 ms past', 'Color', 'k'); % Correct time axis label
+    title([electrodeLabel ' Time-Frequency Fabric (Green Needle/Brainstorm)'], 'Color', 'k');
+    view([55, 30]); % Set a static 3D view
+    % Capture frame and ensure it is the correct size
+    drawnow;
+    frame = getframe(figh);
+    writeVideo(v, frame);
+end
+close(v);
