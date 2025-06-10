@@ -78,7 +78,7 @@ gaussWin = gaussWin / sum(gaussWin);
 % Initialize output
 PC_weights = zeros(timePoints, nChannels, nPCs); % time x channels x PCs
 
-%% SLIDING WINDOW PCA
+% SLIDING WINDOW PCA
 for t = 1:timePoints
     % Extract window
     dataWin = ampPadded(t:t+windowMs-1, :);
@@ -104,7 +104,7 @@ for t = 1:timePoints
     end
 end
 
-%% Convert to 3D trajectory like before
+% Convert to 3D trajectory like before
 % Project original data onto time-resolved PCA weights
 score_dynamic = zeros(timePoints, nPCs);
 
@@ -158,7 +158,7 @@ pcRange = pcMax - pcMin;
 pcMin = pcMin - buffer * pcRange;
 pcMax = pcMax + buffer * pcRange;
 
-%% CREATE MOVIE
+% CREATE MOVIE
 
 figure('Position',[100 100 1000 800],'Color','w');
 filename = 'entireGNBSsongsSession.mp4';
@@ -212,53 +212,139 @@ end
 close(v);
 
 
+%% Can save weights and scores
+% --- Extract PC weights ---
+PC1noGNBS = squeeze(PC_weights(:,:,1));  % [2876401 x 16]
+PC2noGNBS = squeeze(PC_weights(:,:,2));  % [2876401 x 16]
+PC3noGNBS = squeeze(PC_weights(:,:,3));  % [2876401 x 16]
+
+% --- Save each PC weight matrix ---
+writematrix(PC1noGNBS, 'PC1noGNBS.csv');
+fprintf('Saved: PC1noGNBS.csv\n');
+
+writematrix(PC2noGNBS, 'PC2noGNBS.csv');
+fprintf('Saved: PC2noGNBS.csv\n');
+
+writematrix(PC3noGNBS, 'PC3noGNBS.csv');
+fprintf('Saved: PC3noGNBS.csv\n');
+
+% --- Save score_dynamic ---
+score_dynamicNoGNBS = squeeze(score_dynamic);  % [287401 x 3], just in case
+writematrix(score_dynamicNoGNBS, 'score_dynamicNoGNBS.csv');
+fprintf('Saved: score_dynamicNoGNBS.csv\n');
+
+
+
 %% MOTHERLODE: Dyn PCA but allowing present to update the recent past visually
 %MOTHERLODE!!!!!!!
-% --- PREP STAGE ---
-startIdx = 609900;
-endIdx = 3486300;
-nHistory = 200;
+% --- MOTHERLODE --- RETRO-STAMP MODE ---
+startIdx = 2317600;
+endIdx = 2657780;
+nHistory = 400;  % 400 ms history
 stepSize = 20;
 videoFrameRate = 50;
 
-PC_weights_slice = PC_weights(startIdx:endIdx,:,:);
-score_dynamic_slice = score_dynamic(startIdx:endIdx,:);
+PC_weights_slice = PC_weights(startIdx:endIdx,:,:);               % [time x 16 x 3]
+score_dynamic_slice = score_dynamic(startIdx:endIdx,:);           % [time x 3]
+ampEnvelope_slice = ampEnvelopeAll(startIdx:endIdx,:);            % [time x 16]
 
 nTime = size(score_dynamic_slice, 1);
 nFrames = floor(nTime / stepSize);
 
-ampEnvelope_slice = ampEnvelopeAll(startIdx:endIdx,:);  % assuming ampEnvelope is [time x 16]
+% Precompute adjusted scores using cast-added weight deltas
+score_dynamic_adjusted = nan(nTime, nHistory, 3);  % [time x 400 ms x 3 PCs]
 
-% Precompute adjusted scores
-score_dynamic_adjusted = nan(nTime, nHistory, 3);
-
-fprintf('Precomputing adjusted scores...\n');
-for t = nHistory+1:nTime
-    w = squeeze(PC_weights_slice(t,:,:));  % [16 x 3] weights at now
+fprintf('Precomputing adjusted scores (cast-add deltas)...\n');
+for t = 1 + nHistory : nTime
     for h = 1:nHistory
-        sig = ampEnvelope_slice(t - h, :);  % [1 x 16]
-        score_dynamic_adjusted(t, h, :) = sig * w;  % [1 x 3]
+        t_h = t - h;
+        % Start with the original weights at t-h
+        w_h = squeeze(PC_weights_slice(t_h,:,:));  % [16 x 3]
+
+        % Apply cast-add of all deltas from t_h+1 to t
+        for shift = t_h+1 : t
+            delta_w = squeeze(PC_weights_slice(shift,:,:) - PC_weights_slice(shift-1,:,:));
+            w_h = w_h + delta_w;
+        end
+
+        amp_h = ampEnvelope_slice(t_h, :);  % [1 x 16]
+        score_dynamic_adjusted(t, h, :) = amp_h * w_h;  % [1 x 3]
     end
 end
 
-% --- VIDEO STAGE ---
-filename = 'BankWalk_Motherload_v1.mp4';
+
+
+
+
+%% PCA weights change visualization
+filename = 'PC_weights_bargraph_labeled.mp4';
+v = VideoWriter(filename, 'MPEG-4');
+v.FrameRate = 50;
+open(v);
+
+figure('Position', [100 100 1200 600], 'Color', 'w');
+
+nTime = size(PC_weights_slice, 1);
+nElectrodes = 16;
+nPCs = 3;
+
+electrodeLabels = {'Fp1', 'Fp2', 'C3', 'C4', 'Pz', 'Fz', 'O1', 'O2', ...
+                   'F7', 'F8', 'F3', 'F4', 'T3', 'Cz', 'P3', 'P4'};
+
+% Build x-axis labels: 'Fp1-PC1', 'Fp1-PC2', ..., 'P4-PC3'
+xLabels = cell(nElectrodes * nPCs, 1);
+for i = 1:nElectrodes
+    for j = 1:nPCs
+        idx = (i-1)*nPCs + j;
+        xLabels{idx} = sprintf('%s-PC%d', electrodeLabels{i}, j);
+    end
+end
+x = 1:numel(xLabels);
+
+% Optional: color-code PC1 = red, PC2 = green, PC3 = blue
+barColors = repmat([1 0 0; 0 1 0; 0 0 1], nElectrodes, 1);  % [48 x 3]
+
+for t = 1:20:nTime
+    clf;
+
+    weights = reshape(PC_weights_slice(t,:,:), [nElectrodes * nPCs, 1]);  % [48 x 1]
+
+    b = bar(x, weights, 'FaceColor', 'flat');
+    b.CData = barColors;
+
+    ylim([-2 2]);  % Adjust based on actual range
+    xlim([0 numel(xLabels)+1]);
+    xticks(x);
+    xticklabels(xLabels);
+    xtickangle(90);
+    title(sprintf('Timepoint %d (%.2f sec)', t, t / 50), 'FontSize', 16);
+    ylabel('PCA Weight');
+
+    frame = getframe(gcf);
+    writeVideo(v, frame);
+end
+
+close(v);
+
+
+% --- VIDEO GENERATION ---
+filename = 'BankWalk_Motherload_v2_retrostamp.mp4';
 v = VideoWriter(filename, 'MPEG-4');
 v.FrameRate = videoFrameRate;
 open(v);
 
 figure('Position',[100 100 1000 900],'Color','w');
 
-% Axis limits
+% Compute axis limits
 buffer = 0.1;
-all_scores = reshape(score_dynamic_adjusted, [], 3);
-xrange = range(all_scores(:,1), 'omitnan');
-yrange = range(all_scores(:,2), 'omitnan');
-zrange = range(all_scores(:,3), 'omitnan');
+flat_scores = reshape(score_dynamic_adjusted, [], 3);
+xrange = range(flat_scores(:,1), 'omitnan');
+yrange = range(flat_scores(:,2), 'omitnan');
+zrange = range(flat_scores(:,3), 'omitnan');
 
-xlim_vals = [min(all_scores(:,1),[],'omitnan')-buffer*xrange, max(all_scores(:,1),[],'omitnan')+buffer*xrange];
-ylim_vals = [min(all_scores(:,2),[],'omitnan')-buffer*yrange, max(all_scores(:,2),[],'omitnan')+buffer*yrange];
-zlim_vals = [min(all_scores(:,3),[],'omitnan')-buffer*zrange, max(all_scores(:,3),[],'omitnan')+buffer*zrange];
+xlim_vals = [min(flat_scores(:,1),[],'omitnan')-buffer*xrange, max(flat_scores(:,1),[],'omitnan')+buffer*xrange];
+ylim_vals = [min(flat_scores(:,2),[],'omitnan')-buffer*yrange, max(flat_scores(:,2),[],'omitnan')+buffer*yrange];
+zlim_vals = [min(flat_scores(:,3),[],'omitnan')-buffer*zrange, max(flat_scores(:,3),[],'omitnan')+buffer*zrange];
 
 fprintf('Generating video...\n');
 for iFrame = 1:nFrames
@@ -266,18 +352,18 @@ for iFrame = 1:nFrames
 
     tNow = iFrame * stepSize;
 
-    % Plot history trail
-    trail = squeeze(score_dynamic_adjusted(tNow, :, :));  % [200 x 3]
+    % Plot history trail using retrospective reprint with current weights
+    trail = squeeze(score_dynamic_adjusted(tNow, :, :));  % [400 x 3]
     plot3(trail(:,1), trail(:,2), trail(:,3), 'b-', 'LineWidth', 1.5);
 
-    % Plot current tracer
+    % Plot current tracer dot (real PCA score at that moment)
     scatter3(score_dynamic_slice(tNow,1), score_dynamic_slice(tNow,2), score_dynamic_slice(tNow,3), ...
              50, 'r', 'filled');
 
     xlabel('PC1','FontSize',14);
     ylabel('PC2','FontSize',14);
     zlabel('PC3','FontSize',14);
-    title(sprintf('t = %.3f sec', (tNow + startIdx)/1000), 'FontSize',16);
+    title(sprintf('t = %.3f sec', (tNow / 1000) + 609.9), 'FontSize',16);
     grid on;
     xlim(xlim_vals); ylim(ylim_vals); zlim(zlim_vals);
     view([30 + 0.15*iFrame, 20]);
@@ -288,3 +374,88 @@ for iFrame = 1:nFrames
 end
 
 close(v);
+fprintf('Done!\n');
+
+
+
+
+% --- SETTINGS ---
+filename = 'PC_weightsDOODLE.mp4';
+v = VideoWriter(filename, 'MPEG-4');
+v.FrameRate = 50;
+open(v);
+
+figure('Position', [100 100 1200 600], 'Color', 'w');
+
+% --- VARS ---
+nElectrodes = 16;
+nPCs = 3;
+frameWindow = 1000;  % 20 seconds at 50 fps
+
+% Electrode labels
+electrodeLabels = {'Fp1', 'Fp2', 'C3', 'C4', 'Pz', 'Fz', 'O1', 'O2', ...
+                   'F7', 'F8', 'F3', 'F4', 'T3', 'Cz', 'P3', 'P4'};
+
+% Build x-axis labels: 'Fp1-PC1', 'Fp1-PC2', ..., 'P4-PC3'
+xLabels = cell(nElectrodes * nPCs, 1);
+for i = 1:nElectrodes
+    for j = 1:nPCs
+        idx = (i-1)*nPCs + j;
+        xLabels{idx} = sprintf('%s-PC%d', electrodeLabels{i}, j);
+    end
+end
+x = 1:numel(xLabels);
+
+% Color-code PC1 = red, PC2 = green, PC3 = blue
+barColors = repmat([1 0 0; 0 1 0; 0 0 1], nElectrodes, 1);  % [48 x 3]
+
+% --- FRAME LOOP ---
+for t = 1:frameWindow
+    clf;
+
+    weights = reshape(PC_weights_slice(t,:,:), [nElectrodes * nPCs, 1]);  % [48 x 1]
+
+    b = bar(x, weights, 'FaceColor', 'flat');
+    b.CData = barColors;
+
+    ylim([-0.8 0.8]);  % Adjust if needed
+    xlim([0 numel(xLabels)+1]);
+    xticks(x);
+    xticklabels(xLabels);
+    xtickangle(90);
+    title(sprintf('Time %.2f sec (frame %d)', t/50, t), 'FontSize', 16);
+    ylabel('PCA Weight');
+    grid on;
+
+    frame = getframe(gcf);
+    writeVideo(v, frame);
+end
+
+close(v);
+
+
+
+
+%% Make plot of tracer speed
+% === INPUTS ===
+Fs = 1000;  % Sampling rate in Hz
+dt = 1 / Fs;
+
+% Assuming score_dynamic is [T x 3]
+velocity_linear = nan(size(score_dynamic,1)-1,1);  % One less because diff
+
+% Compute Euclidean distance between successive points
+for t = 2:size(score_dynamic,1)
+    delta = score_dynamic(t,:) - score_dynamic(t-1,:);
+    velocity_linear(t-1) = norm(delta) / dt;  % mm/sec or whatever units
+end
+
+% === PLOT ===
+tVec = (1:length(velocity_linear)) / Fs;
+
+figure;
+plot(tVec, velocity_linear, 'b');
+xlabel('Time (s)');
+ylabel('Linear Velocity in PCA Space');
+title('Instantaneous Tracer Speed');
+grid on;
