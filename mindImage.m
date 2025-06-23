@@ -1,8 +1,7 @@
 % mindImage.m
 % By Brad Caldwell, June 15, 2025.
-% To take a mind image, 1. EEG, 2. CMW, 3. PCA.
+% 1. EEG, 2. CMW, 3. PCA.
 % Need millisecond precision of each recording/processing step.
-% It's a triple pass 'time/signal microscope' to convert brain activity to spatial schemas.
 
 %% 1. Ms-resolution EEG. 
 % 16-channel+ recommended. Load cleaned, upsampled voltage values. Pick a song to clip.
